@@ -6,27 +6,25 @@
 (cell, int) dict_add_builder?(cell dict, int key_len, slice index, builder value) asm(value index dict key_len) "DICTADDB";
 (cell, int) dict_delete?(cell dict, int key_len, slice index) asm(index dict key_len) "DICTDEL";
 
-slice read_comment(slice in_msg) impure {
-    int need_break = 0;
-    builder result = begin_cell();
-    do {
-        result = result.store_slice(in_msg~load_bits(in_msg.slice_bits()));
-        int refs_len = in_msg.slice_refs();
-        need_break = refs_len == 0;
-        if (~ need_break) {
-            throw_unless(202, refs_len == 1);
-            in_msg = in_msg~load_ref().begin_parse();
-        }
-    } until (need_break);
-    return result.end_cell().begin_parse();
+int comment_empty?(slice in_msg) impure {
+    if (in_msg.slice_refs() == 0) {
+      return slice_empty?(in_msg);
+    }
+    if (in_msg.slice_refs() == 1) {
+        in_msg = in_msg~load_ref().begin_parse();
+        return slice_empty?(in_msg);
+    }
+    return 0;
 }
 
-() send_payment(int amount, slice address) impure inline {
+() bounce_tx(int amount, slice address) impure inline {
     var msg = begin_cell()
         .store_uint(0x10, 6) ;; nobounce
         .store_slice(address)
         .store_grams(amount)
         .store_uint(0, 107)
+        .store_uint(0, 32)
+        .store_slice("Invalid memo/comment")
         .end_cell();
 
     send_raw_message(msg, 2);
@@ -35,17 +33,16 @@ slice read_comment(slice in_msg) impure {
 () recv_internal(int msg_value, cell in_msg_cell, slice in_msg) impure {
   var cs = in_msg_cell.begin_parse();
   var flags = cs~load_uint(4);  ;; int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool
-  slice comment = read_comment(in_msg);
   slice s_addr = cs~load_msg_addr();
   if (flags & 1) {
     ;; ignore all bounced messages
     return ();
   }
 
-  if (slice_empty?(comment)) {
-    send_payment(msg_value, s_addr);
+  if (comment_empty?(in_msg)) {
+    bounce_tx(msg_value, s_addr);
+    return ();
   }
-;;   throw_if(100, slice_empty?(comment));
 
   if (in_msg.slice_bits() < 32) {
     ;; ignore simple transfers
