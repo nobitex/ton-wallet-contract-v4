@@ -1,27 +1,59 @@
-#pragma version =0.2.0;
+#pragma version =0.4.4;
+#include "imports/stdlib.fc";
 ;; Wallet smart contract with plugins
 
 (slice, int) dict_get?(cell dict, int key_len, slice index) asm(index dict key_len) "DICTGET" "NULLSWAPIFNOT";
 (cell, int) dict_add_builder?(cell dict, int key_len, slice index, builder value) asm(value index dict key_len) "DICTADDB";
 (cell, int) dict_delete?(cell dict, int key_len, slice index) asm(index dict key_len) "DICTDEL";
 
+int comment_empty?(slice in_msg) impure {
+    if (in_msg.slice_refs() == 0) {
+      return slice_empty?(in_msg);
+    }
+    if (in_msg.slice_refs() == 1) {
+        in_msg = in_msg~load_ref().begin_parse();
+        return slice_empty?(in_msg);
+    }
+    return 0;
+}
+
+() bounce_tx(int amount, slice address) impure inline {
+    var msg = begin_cell()
+        .store_uint(0x10, 6) ;; nobounce
+        .store_slice(address)
+        .store_grams(amount)
+        .store_uint(0, 107)
+        .store_uint(0, 32)
+        .store_slice("Invalid memo/comment")
+        .end_cell();
+
+    send_raw_message(msg, 2);
+}
+
 () recv_internal(int msg_value, cell in_msg_cell, slice in_msg) impure {
   var cs = in_msg_cell.begin_parse();
   var flags = cs~load_uint(4);  ;; int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool
+  slice s_addr = cs~load_msg_addr();
   if (flags & 1) {
     ;; ignore all bounced messages
     return ();
   }
+
+  if (comment_empty?(in_msg)) {
+    bounce_tx(msg_value, s_addr);
+    return ();
+  }
+
   if (in_msg.slice_bits() < 32) {
     ;; ignore simple transfers
     return ();
   }
+
   int op = in_msg~load_uint(32);
   if (op != 0x706c7567) & (op != 0x64737472) { ;; "plug" & "dstr"
     ;; ignore all messages not related to plugins
     return ();
   }
-  slice s_addr = cs~load_msg_addr();
   (int wc, int addr_hash) = parse_std_addr(s_addr);
   slice wc_n_address = begin_cell().store_int(wc, 8).store_uint(addr_hash, 256).end_cell().begin_parse();
   var ds = get_data().begin_parse().skip_bits(32 + 32 + 256);
